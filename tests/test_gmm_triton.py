@@ -10,11 +10,9 @@ def setup_gmm():
     dtype = torch.float32  # Use double precision for gradcheck accuracy
 
     # Define dimensions
-    batch_size = 1
-    seq_len = 3
-    hidden = 4  # Ensure this is even for the test
-    hidden_half = hidden // 2
-    n_components = 4
+    batch_size = 10
+    seq_len = 20
+    hidden = 30  # Ensure this is even for the test
 
     
     # Prepare the GMMActivation2D module
@@ -42,12 +40,12 @@ def test_correctness(setup_gmm):
 def test_gradient_wrt_input_finite_diff(setup_gmm):
     gmm_activation, x, _, __, ___, ____ = setup_gmm
     params = (x,)
-    assert gradcheck(gmm_activation, params, eps=1e-3, atol=1e-3)
+    assert gradcheck(gmm_activation, params, eps=1e-3, atol=1e-3, rtol=0)
 
 def test_gradient_wrt_input_finite_diff_ref_impl(setup_gmm):
     gmm_activation, x, means, inv_var_covar, det, weights = setup_gmm
     params = (x, means, inv_var_covar, det, weights)
-    assert gradcheck(gmm2d_precomputed, params, eps=1e-3, atol=1e-3)
+    assert gradcheck(gmm2d_precomputed, params, eps=1e-3, atol=1e-3, rtol=0)
 
 def test_gradient_wrt_weight_ref_impl(setup_gmm):
     gmm_activation, x, means, inv_var_covar, det, weights = setup_gmm
@@ -88,7 +86,9 @@ def test_gradient_wrt_input_ref_impl(setup_gmm):
 
     actual_output = gmm_activation(x)
     torch.testing.assert_allclose(expected_output, actual_output)
-
     actual_output.backward(gradient=dl_doutput, inputs=x)
     actual_grad = x.grad.clone()
+
+    print(expected_grad)
+    print(actual_grad)
     torch.testing.assert_allclose(expected_grad, actual_grad)

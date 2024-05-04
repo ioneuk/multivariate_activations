@@ -1,0 +1,11 @@
+./.vscode/*
+./checkpoints/*
+**/__pycache__/*
+.vscode/launch.json
+.vscode/settings.json
+activations/__pycache__/__init__.cpython-310.pyc
+activations/__pycache__/gmm_triton.cpython-310.pyc
+activations/__pycache__/gmm2d.cpython-310.pyc
+model/__pycache__/__init__.cpython-310.pyc
+model/__pycache__/gpt.cpython-310.pyc
+tests/__pycache__/test_gmm_triton.cpython-310-pytest-8.2.0.pyc
