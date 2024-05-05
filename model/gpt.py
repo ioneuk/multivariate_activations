@@ -42,6 +42,7 @@ from flash_attn.utils.generation import GenerationMixin
 from flash_attn.utils.pretrained import state_dict_from_pretrained
 
 from activations.gmm2d import GMMActivation2D
+from activations.mli2d import MLISoftLut2Layer
 
 try:
     from flash_attn.ops.fused_dense import ColumnParallelLinear
@@ -154,7 +155,10 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             "glu",
             "swiglu",
             "geglu",
-            "gmm2d"
+            
+            # Custom activations
+            "gmm2d",
+            'mli2d'
         ]
         if config.activation_function in ["glu", "swiglu", "geglu"]:
             activation = (
@@ -189,6 +193,8 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
                 activation = sqrelu_fwd
             elif config.activation_function == "gmm2d":
                 activation = GMMActivation2D(dim=config.n_inner if config.n_inner else config.hidden_size * 4, **factory_kwargs)
+            elif config.activation_function == "mli2d":
+                activation = MLISoftLut2Layer(dim=config.n_inner if config.n_inner else config.hidden_size * 4, **factory_kwargs)
             else:
                 approximate = (
                     "tanh"
@@ -428,7 +434,10 @@ class GPTModel(GPTPreTrainedModel):
             "glu",
             "swiglu",
             "geglu",
-            "gmm2d"
+
+            # Custom activations
+            "gmm2d",
+            "mli2d"
         ]
         pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
         vocab_size = (

@@ -14,7 +14,7 @@ def _eval_2d_gaussian_precomputed(mean: Tensor, inv_var_covar: Tensor, det: Tens
     return pdf.squeeze()
 
 
-@torch.jit.script
+@torch.compile
 def gmm2d_precomputed(x: Tensor, means: Tensor, inv_var_covar: Tensor, det: Tensor, weights: Tensor):
     x = x.view(x.shape[0], x.shape[1], -1, 2)
     n_components, _ = means.shape
@@ -46,6 +46,6 @@ class GMMActivation2D(nn.Module):
 
     def forward(self, x):
         if self.use_triton:
-            return GMM2DTriton.apply(x, self.modes, self.inv_var_covar, self.det_var_covar, self.weights)
+            return GMM2DTriton.apply(x, self.weights)
         else:
             return gmm2d_precomputed(x, self.modes, self.inv_var_covar, self.det_var_covar, self.weights)
