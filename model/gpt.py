@@ -42,7 +42,7 @@ from flash_attn.utils.generation import GenerationMixin
 from flash_attn.utils.pretrained import state_dict_from_pretrained
 
 from activations.gmm2d import GMMActivation2D
-from activations.mli2d import MLISoftLut2Layer
+from activations.mli2d import GatedMLISoftLut2Layer, MLISoftLut2Layer
 
 try:
     from flash_attn.ops.fused_dense import ColumnParallelLinear
@@ -158,14 +158,18 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             
             # Custom activations
             "gmm2d",
-            'mli2d'
+            "mli2d",
+            "mli2d-gated"
         ]
-        if config.activation_function in ["glu", "swiglu", "geglu"]:
-            activation = (
-                F.sigmoid
-                if config.activation_function == "glu"
-                else (F.silu if config.activation_function == "swiglu" else F.gelu)
-            )
+        if config.activation_function in ["glu", "swiglu", "geglu", "mli2d-gated"]:
+            if config.activation_function == "mli2d-gated":
+                activation = GatedMLISoftLut2Layer(dim=int(config.hidden_size * 8 / 3), **factory_kwargs)
+            else:
+                activation = (
+                    F.sigmoid
+                    if config.activation_function == "glu"
+                    else (F.silu if config.activation_function == "swiglu" else F.gelu)
+                )
             mlp_cls = GatedMlp if process_group is None else ParallelGatedMlp
             parallel_kwargs = (
                 {
@@ -437,7 +441,8 @@ class GPTModel(GPTPreTrainedModel):
 
             # Custom activations
             "gmm2d",
-            "mli2d"
+            "mli2d",
+            "mli2d-gated"
         ]
         pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
         vocab_size = (
