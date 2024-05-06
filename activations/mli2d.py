@@ -48,9 +48,10 @@ class MLISoftLut2Layer(nn.Module):
 
 
 class GatedMLISoftLut2Layer(nn.Module):
-    def __init__(self, dim, device=None, dtype=None):
+    def __init__(self, dim, device=None, dtype=None, residual=True):
         super(GatedMLISoftLut2Layer, self).__init__()
         self.dim = dim
+        self.residual = residual
 
         lut_width = 2
         lut_volume = 2 ** lut_width
@@ -86,5 +87,8 @@ class GatedMLISoftLut2Layer(nn.Module):
         b0 = ratio1 * z0 + (1 - ratio1) * z1
         res = ratio0 * b0 + (1 - ratio0) * b1
 
-        res = res * torch.sigmoid(x)
+        if self.residual:
+            res = torch.sigmoid(x) * (x + res)
+        else:
+            res = res * torch.sigmoid(x)
         return res
