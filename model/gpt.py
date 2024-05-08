@@ -42,7 +42,8 @@ from flash_attn.utils.generation import GenerationMixin
 from flash_attn.utils.pretrained import state_dict_from_pretrained
 
 from activations.gmm2d import GMMActivation2D
-from activations.mli2d import GatedMLISoftLut2Layer, MLISoftLut2Layer
+from activations.mli2d import GatedMLISoftLut2Layer, MLISoftInputLut2Layer, MLISoftLut2Layer
+from model.mlp import InterpolationMlp
 
 try:
     from flash_attn.ops.fused_dense import ColumnParallelLinear
@@ -155,11 +156,11 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             "glu",
             "swiglu",
             "geglu",
-            
             # Custom activations
             "gmm2d",
             "mli2d",
-            "mli2d-gated"
+            "mli2d-gated",
+            "mli2d-input"
         ]
         if config.activation_function in ["glu", "swiglu", "geglu", "mli2d-gated"]:
             if config.activation_function == "mli2d-gated":
@@ -187,7 +188,6 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
                 bias1=mlp_fc1_bias,
                 bias2=mlp_fc2_bias,
                 multiple_of=mlp_multiple_of,
-                **parallel_kwargs,
                 **factory_kwargs,
             )
         else:
@@ -199,6 +199,8 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
                 activation = GMMActivation2D(dim=config.n_inner if config.n_inner else config.hidden_size * 4, **factory_kwargs)
             elif config.activation_function == "mli2d":
                 activation = MLISoftLut2Layer(dim=config.n_inner if config.n_inner else config.hidden_size * 4, **factory_kwargs)
+            elif config.activation_function == "mli2d-input":
+                activation = MLISoftInputLut2Layer()
             else:
                 approximate = (
                     "tanh"
@@ -207,24 +209,35 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
                     else "none"
                 )
                 activation = partial(F.gelu, approximate=approximate)
-            mlp_cls = Mlp if process_group is None else ParallelMLP
-            parallel_kwargs = (
-                {
-                    "process_group": process_group,
-                    "sequence_parallel": getattr(config, "sequence_parallel", True),
-                }
-                if process_group is not None
-                else {}
-            )
-            mlp_cls = partial(
-            mlp_cls,
-                hidden_features=config.n_inner,
-                activation=activation,
-                bias1=mlp_fc1_bias,
-                bias2=mlp_fc2_bias,
-                **parallel_kwargs,
-                **factory_kwargs,
-            )
+            
+            if config.activation_function == "mli2d-input":
+                mlp_cls =  partial(
+                    InterpolationMlp,
+                    hidden_features_first=config.n_inner,
+                    hidden_features_second=config.n_inner // 3,
+                    activation=activation,
+                    bias1=mlp_fc1_bias,
+                    bias2=mlp_fc2_bias,
+                    **factory_kwargs,
+                )
+
+            else:
+                if process_group is None:
+                    mlp_cls = Mlp
+                else:
+                    mlp_cls = ParallelMLP
+                parallel_kwargs = ({"process_group": process_group, "sequence_parallel": getattr(config, "sequence_parallel", True), } if process_group is not None else {})
+                mlp_cls = partial(
+                    mlp_cls,
+                    hidden_features=config.n_inner,
+                    activation=activation,
+                    bias1=mlp_fc1_bias,
+                    bias2=mlp_fc2_bias,
+                    **parallel_kwargs,
+                    **factory_kwargs,
+                )
+            
+
     else:
         mlp_checkpoint_lvl = getattr(config, "mlp_checkpoint_lvl", 0)
         # mlp_checkpoint_lvl could be a list, which contains the checkpoint_lvl for each layer
@@ -442,7 +455,8 @@ class GPTModel(GPTPreTrainedModel):
             # Custom activations
             "gmm2d",
             "mli2d",
-            "mli2d-gated"
+            "mli2d-gated",
+            "mli2d-input"
         ]
         pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
         vocab_size = (
