@@ -23,13 +23,14 @@ from flash_attn.models.opt import remap_state_dict_hf_opt
 from flash_attn.modules.block import Block, ParallelBlock
 from flash_attn.modules.embedding import GPT2Embeddings, ParallelGPT2Embeddings
 from flash_attn.modules.mha import MHA, ParallelMHA
-from flash_attn.modules.mlp import (
+from model.mlp import (
     FusedMLP,
     GatedMlp,
     Mlp,
     ParallelFusedMLP,
     ParallelGatedMlp,
     ParallelMLP,
+    InterpolationMlp
 )
 from flash_attn.ops.activations import sqrelu_fwd
 from flash_attn.utils.distributed import (
@@ -41,8 +42,8 @@ from flash_attn.utils.distributed import (
 from flash_attn.utils.generation import GenerationMixin
 from flash_attn.utils.pretrained import state_dict_from_pretrained
 
-from activations.gmm2d import GMMActivation2D
-from activations.mli2d import GatedMLISoftLut2Layer, MLISoftInputLut2Layer, MLISoftLut2Layer
+from activations.gmm2d import GMMActivation2D, GMMActivation2DFullyLearnable
+from activations.mli2d import GatedMLISoftLut2Layer, GatedMLISoftLut2LayerWithLearnableCoords, MLISoftInputLut2Layer, MLISoftLut2Layer
 from model.mlp import InterpolationMlp
 
 try:
@@ -158,13 +159,19 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             "geglu",
             # Custom activations
             "gmm2d",
+            "gmm2d-gated",
             "mli2d",
             "mli2d-gated",
-            "mli2d-input"
+            "mli2d-input",
+            "mli2d-gated-learned-coords"
         ]
-        if config.activation_function in ["glu", "swiglu", "geglu", "mli2d-gated"]:
+        if config.activation_function in ["glu", "swiglu", "geglu", "gmm2d-gated", "mli2d-gated", "mli2d-gated-learned-coords"]:
             if config.activation_function == "mli2d-gated":
                 activation = GatedMLISoftLut2Layer(dim=int(config.hidden_size * 8 / 3), **factory_kwargs)
+            elif config.activation_function == "gmm2d-gated":
+                activation = GMMActivation2DFullyLearnable(dim=int(config.hidden_size * 8 / 3), **factory_kwargs)
+            elif config.activation_function == "mli2d-gated-learned-coords":
+                activation = GatedMLISoftLut2LayerWithLearnableCoords(dim=int(config.hidden_size * 8 / 3), **factory_kwargs)
             else:
                 activation = (
                     F.sigmoid
@@ -196,7 +203,7 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             elif config.activation_function == "sqrelu":
                 activation = sqrelu_fwd
             elif config.activation_function == "gmm2d":
-                activation = GMMActivation2D(dim=config.n_inner if config.n_inner else config.hidden_size * 4, **factory_kwargs)
+                activation = GMMActivation2DFullyLearnable(dim=config.n_inner if config.n_inner else config.hidden_size * 4, **factory_kwargs)
             elif config.activation_function == "mli2d":
                 activation = MLISoftLut2Layer(dim=config.n_inner if config.n_inner else config.hidden_size * 4, **factory_kwargs)
             elif config.activation_function == "mli2d-input":
@@ -454,9 +461,11 @@ class GPTModel(GPTPreTrainedModel):
 
             # Custom activations
             "gmm2d",
+            "gmm2d-gated",
             "mli2d",
             "mli2d-gated",
-            "mli2d-input"
+            "mli2d-input",
+            "mli2d-gated-learned-coords"
         ]
         pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
         vocab_size = (

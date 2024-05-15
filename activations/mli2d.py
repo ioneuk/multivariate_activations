@@ -144,3 +144,66 @@ class GatedMLISoftLut2Layer(nn.Module):
         else:
             res = res * torch.sigmoid(x)
         return res
+
+class GatedMLISoftLut2LayerWithLearnableCoords(nn.Module):
+    def __init__(self, dim, device=None, dtype=None, residual=True):
+        super(GatedMLISoftLut2LayerWithLearnableCoords, self).__init__()
+        self.dim = dim
+        self.residual = residual
+        self.scaling_factor = 8
+
+        lut_width = 2
+        lut_volume = 2 ** lut_width
+        factory_kwargs = {'device': device, 'dtype': dtype if dtype else torch.float32}
+        self.weights = nn.Parameter(torch.rand((dim, lut_volume),  **factory_kwargs))
+        self.interp_refs = nn.Parameter(torch.tensor([[-0.2, 0.2],[0.2, 0.2], [-0.2, -0.2], [0.2, -0.2]],  **factory_kwargs))
+        self._init_weights()
+
+    def forward(self, x):
+        # Input x expected to be of shape: batch_size x seq_length x dim
+        batch_size, seq_length, _ = x.shape 
+
+        # Generate indices
+        idx0 = torch.arange(self.dim, device=x.device) % self.dim
+        idx1 = (idx0 + 1) % self.dim
+
+        # Expand indices for batch and sequence dimensions
+        idx0 = idx0.unsqueeze(0).unsqueeze(0).expand(batch_size, seq_length, -1)
+        idx1 = idx1.unsqueeze(0).unsqueeze(0).expand(batch_size, seq_length, -1)
+
+        # Gather inputs using the generated indices
+        input1 = torch.gather(x, 2, idx1)
+        input0 = torch.gather(x, 2, idx0)
+
+        x0, x1, x2, x3 = self.interp_refs[0,0], self.interp_refs[1,0], self.interp_refs[2,0], self.interp_refs[3,0]
+        y0, y1, y2, y3 = self.interp_refs[0,1], self.interp_refs[1,1], self.interp_refs[2,1], self.interp_refs[3,1]
+        x0_len = x1-x0
+        x1_len = x3-x2
+        y0_len = y0-y2
+        y1_len = y1-y3
+        
+        ratiox01 = (x1 - input0) / x0_len
+        ratiox23 = (x3 - input0) / x1_len
+        ratioy02 = (y0 - input1) / y0_len
+        ratioy13 = (y1 - input1) / y1_len
+
+        # Expand weights for batch and sequence dimensions
+        z3 = self.weights[:, 3].unsqueeze(0).unsqueeze(0).expand(batch_size, seq_length, -1)
+        z2 = self.weights[:, 2].unsqueeze(0).unsqueeze(0).expand(batch_size, seq_length, -1)
+        z1 = self.weights[:, 1].unsqueeze(0).unsqueeze(0).expand(batch_size, seq_length, -1)
+        z0 = self.weights[:, 0].unsqueeze(0).unsqueeze(0).expand(batch_size, seq_length, -1)
+
+        b0 = ratiox01 * z0 + (1 - ratiox01) * z1
+        b1 = ratiox23 * z2 + (1 - ratiox23) * z3
+        res1 = ratioy02 * b1 + (1 - ratioy02) * b0
+        res2 = ratioy13 * b1 + (1 - ratioy13) * b0
+        res = (res1 + res2) / 2
+
+        if self.residual:
+            res = torch.sigmoid(x) * (x + self.scaling_factor * res)
+        else:
+            res = res * torch.sigmoid(x)
+        return res
+
+    def _init_weights(self, initializer_range=0.02):
+        nn.init.normal_(self.weights, std=initializer_range)

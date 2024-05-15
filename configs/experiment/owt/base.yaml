@@ -61,6 +61,10 @@ eval:
   log_on_step: True  # 1 training epoch takes too long, we want to see metrics per train step
 
 callbacks:
+  watch_model:
+    _target_: src.callbacks.wandb_callbacks.WatchModel
+    log: "all"
+    log_freq: 100
   model_checkpoint:
     monitor: val/loss
     mode: min
