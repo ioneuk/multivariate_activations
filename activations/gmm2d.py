@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, autocast
 
 from activations.gmm_triton import GMM2DTriton
 
@@ -14,7 +14,7 @@ def _eval_2d_gaussian_precomputed(mean: Tensor, inv_var_covar: Tensor, det: Tens
     return pdf.squeeze()
 
 
-@torch.compile
+@torch.jit.script
 def gmm2d_precomputed(x: Tensor, means: Tensor, inv_var_covar: Tensor, det: Tensor, weights: Tensor):
     x = x.view(x.shape[0], x.shape[1], -1, 2)
     n_components, _ = means.shape
@@ -50,39 +50,77 @@ class GMMActivation2D(nn.Module):
         else:
             return gmm2d_precomputed(x, self.modes, self.inv_var_covar, self.det_var_covar, self.weights)
 
+# class GMMActivation2DFullyLearnable(nn.Module):
+#     def __init__(self, dim, num_components=4, device=None, dtype=None, use_triton=True):
+#         super(GMMActivation2DFullyLearnable, self).__init__()
+#         self.dim = dim
+#         self.num_components = num_components
+#         self.weights = nn.Parameter(torch.randn(1, 1, dim // 2, 4, 2))
+#         self.means = nn.Parameter(torch.randn(num_components, 2))
+        
+#         rand_mat = torch.randn((num_components, 2, 2))
+#         var_covar = nn.Parameter(torch.bmm(rand_mat, rand_mat.transpose(1, 2)))
+#         self.inv_var_covar = nn.Parameter(torch.linalg.inv(var_covar), requires_grad=False)
+
+
+#     def forward(self, x):
+#         return x * gmm2d(x, self.means, self.inv_var_covar, self.weights)
+
+
+# def _eval_2d_gaussian(mean: Tensor, inv_var_covar: Tensor, x: Tensor):
+#     diff = (x - mean.unsqueeze(0).unsqueeze(0).unsqueeze(0)).unsqueeze(-2)
+#     term2 = -0.5 * torch.matmul(torch.matmul(diff, inv_var_covar), diff.transpose(-1, -2))
+#     pdf = torch.exp(term2)
+#     return pdf.squeeze()
+
+
+# @torch.compile
+# def gmm2d(x: Tensor, means: Tensor, inv_var_covar: Tensor, weights: Tensor):
+#     x = x.view(x.shape[0], x.shape[1], -1, 2)
+#     n_components, _ = means.shape
+#     batch_size, seq_len, dim, _ = x.shape
+#     result = torch.zeros_like(x).reshape(batch_size, seq_len, dim, 2)
+#     for i in range(n_components):
+#         _m = means[i]
+#         _covar = inv_var_covar[i]
+#         result += weights[:, :, :, i] * _eval_2d_gaussian(_m, _covar, x).unsqueeze(-1)
+    
+#     return result.reshape(batch_size, seq_len, -1)
+
 class GMMActivation2DFullyLearnable(nn.Module):
     def __init__(self, dim, num_components=4, device=None, dtype=None, use_triton=True):
+        factory_kwargs = {'device': device, 'dtype': dtype if dtype else torch.float32}
         super(GMMActivation2DFullyLearnable, self).__init__()
         self.dim = dim
         self.num_components = num_components
-        self.weights = nn.Parameter(torch.randn(1, 1, dim // 2, 4, 2))
-        self.means = nn.Parameter(torch.randn(num_components, 2))
-        
-        rand_mat = torch.randn((num_components, 2, 2))
-        var_covar = nn.Parameter(torch.bmm(rand_mat, rand_mat.transpose(1, 2)))
-        self.inv_var_covar = nn.Parameter(torch.linalg.inv(var_covar), requires_grad=False)
-
+        self.log_weights = nn.Parameter(torch.log(torch.nn.functional.softplus(torch.randn((1, 1, 1, num_components, 2),  **factory_kwargs))))
+        self.means = nn.Parameter(torch.randn((1, 1, num_components, 2), **factory_kwargs))
+        self.use_triton = use_triton
+        rand_mat = torch.randn((num_components, 2, 2),  **factory_kwargs)
+        self.inv_var_covar = nn.Parameter(torch.bmm(rand_mat, rand_mat.transpose(1, 2)), requires_grad=False)
 
     def forward(self, x):
-        return x * gmm2d(x, self.means, self.inv_var_covar, self.weights)
+        if self.use_triton:
+            return x * GMM2DTriton.apply(x, self.means, self.inv_var_covar, self.log_weights)
+        else:
+            return x * gmm2d(x, self.means, self.inv_var_covar, self.log_weights)
 
 
-def _eval_2d_gaussian(mean: Tensor, inv_var_covar: Tensor, x: Tensor):
-    diff = (x - mean.unsqueeze(0).unsqueeze(0).unsqueeze(0)).unsqueeze(-2)
-    term2 = -0.5 * torch.matmul(torch.matmul(diff, inv_var_covar), diff.transpose(-1, -2))
-    pdf = torch.exp(term2)
-    return pdf.squeeze()
-
-
-@torch.compile
-def gmm2d(x: Tensor, means: Tensor, inv_var_covar: Tensor, weights: Tensor):
-    x = x.view(x.shape[0], x.shape[1], -1, 2)
-    n_components, _ = means.shape
-    batch_size, seq_len, dim, _ = x.shape
-    result = torch.zeros_like(x).reshape(batch_size, seq_len, dim, 2)
-    for i in range(n_components):
-        _m = means[i]
-        _covar = inv_var_covar[i]
-        result += weights[:, :, :, i] * _eval_2d_gaussian(_m, _covar, x).unsqueeze(-1)
+@torch.jit.script
+def gmm2d(x: Tensor, means: Tensor, inv_var_covar: Tensor, log_weights: Tensor):
+    # Reshape input
+    x = x.to(torch.float32)
+    batch_size, seq_len, hidden_dim = x.size()
+    x = x.view(batch_size, seq_len, hidden_dim // 2, 2)
     
-    return result.reshape(batch_size, seq_len, -1)
+    # Calculate Gaussian mixtures
+    # log_gaussians = _eval_log_2d_gaussian(means, inv_var_covar, x)
+    diff = x.unsqueeze(3) - means.unsqueeze(0)
+    term2 = -0.5 * torch.matmul(torch.matmul(diff.unsqueeze(-2), inv_var_covar), diff.unsqueeze(-1))
+    log_gaussians = term2.squeeze(-1).squeeze(-1)
+    
+    # Weight and sum the Gaussians
+    max_log = torch.max(log_gaussians, dim=-1, keepdim=True)[0]
+    weighted_log_gaussians = log_gaussians.unsqueeze(-1) + log_weights - max_log.unsqueeze(-1)
+    weighted_log_gaussians = torch.logsumexp(weighted_log_gaussians, dim=-2) + max_log
+    return weighted_log_gaussians.exp().reshape( batch_size, seq_len, -1)
