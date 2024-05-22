@@ -97,7 +97,7 @@ class GMMActivation2DFullyLearnable(nn.Module):
         self.means = nn.Parameter(torch.randn((1, 1, num_components, 2), **factory_kwargs))
         self.use_triton = use_triton
         rand_mat = torch.randn((num_components, 2, 2),  **factory_kwargs)
-        self.inv_var_covar = nn.Parameter(torch.bmm(rand_mat, rand_mat.transpose(1, 2)), requires_grad=False)
+        self.inv_var_covar = nn.Parameter(torch.bmm(rand_mat, rand_mat.transpose(1, 2)))
 
     def forward(self, x):
         if self.use_triton:

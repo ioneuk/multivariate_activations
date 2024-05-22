@@ -140,7 +140,7 @@ def gmm2d(x, means, inv_var_covar, log_weights, output, SEQ_LEN: tl.constexpr, H
 
 
 @triton.jit
-def gmm2d_backward(x, means, inv_var_covar, log_weights, grad_output, grad_x, grad_means, grad_log_weights, SEQ_LEN: tl.constexpr, HIDDEN: tl.constexpr, NUM_COMPONENTS: tl.constexpr):
+def gmm2d_backward(x, means, inv_var_covar, log_weights, grad_output, grad_x, grad_means, grad_inv_var_covar, grad_log_weights, SEQ_LEN: tl.constexpr, HIDDEN: tl.constexpr, NUM_COMPONENTS: tl.constexpr):
     batch_idx = tl.program_id(0)
     seq_idx = tl.program_id(1)
     hidden_half_idx = tl.program_id(2)
@@ -182,21 +182,29 @@ def gmm2d_backward(x, means, inv_var_covar, log_weights, grad_output, grad_x, gr
         tl.atomic_add(grad_log_weights + comp_idx * 2, grad_out_0 * gaussian*w_0)
         tl.atomic_add(grad_log_weights + comp_idx * 2 + 1, grad_out_1 * gaussian*w_1)
         
-        
+        # Update gradients with respect to input
         out_0_contrib_x0 = -gaussian * sigma_d_0 * w_0
         out_0_contrib_x1 = -gaussian * sigma_d_1 * w_0
         out_1_contrib_x0 = -gaussian * sigma_d_0 * w_1
         out_1_contrib_x1 = -gaussian * sigma_d_1 * w_1
         
-        grad_x_0 += out_0_contrib_x0 * grad_out_0 + out_1_contrib_x0 * grad_out_1
-        grad_x_1 += out_0_contrib_x1 * grad_out_0 + out_1_contrib_x1 * grad_out_1
-
-        # Compute gradients with respect to means
-        grad_mean_0 = gaussian * (w_0 * sigma_d_0 * grad_out_0 + w_1 * sigma_d_0 * grad_out_1)
-        grad_mean_1 = gaussian * (w_0 * sigma_d_1 * grad_out_0 + w_1 * sigma_d_1 * grad_out_1)
+        new_x_0_contrib = out_0_contrib_x0 * grad_out_0 + out_1_contrib_x0 * grad_out_1
+        new_x_1_contrib = out_0_contrib_x1 * grad_out_0 + out_1_contrib_x1 * grad_out_1
+        grad_x_0 += new_x_0_contrib
+        grad_x_1 += new_x_1_contrib
         
-        tl.atomic_add(grad_means + comp_idx * 2, grad_mean_0)
-        tl.atomic_add(grad_means + comp_idx * 2 + 1, grad_mean_1)
+        # Update gradients with respect to means
+        tl.atomic_add(grad_means + comp_idx * 2, -new_x_0_contrib)
+        tl.atomic_add(grad_means + comp_idx * 2 + 1, -new_x_1_contrib)
+
+        grad_inv_00 = -0.5 * gaussian * (w_0 * d_0 * d_0 * grad_out_0 + w_1 * d_0 * d_0 * grad_out_1)
+        grad_inv_01 = -0.5 * gaussian * (w_0 * d_0 * d_1 * grad_out_0 + w_1 * d_0 * d_1 * grad_out_1)
+        grad_inv_11 = -0.5 * gaussian * (w_0 * d_1 * d_1 * grad_out_0 + w_1 * d_1 * d_1 * grad_out_1)
+        
+        tl.atomic_add(grad_inv_var_covar + comp_idx * 4, grad_inv_00)
+        tl.atomic_add(grad_inv_var_covar + comp_idx * 4 + 1, grad_inv_01)
+        tl.atomic_add(grad_inv_var_covar + comp_idx * 4 + 2, grad_inv_01)
+        tl.atomic_add(grad_inv_var_covar + comp_idx * 4 + 3, grad_inv_11)
     
     tl.store(grad_x + idx_base, grad_x_0)
     tl.store(grad_x + idx_base + 1, grad_x_1)
@@ -220,13 +228,14 @@ class GMM2DTriton(torch.autograd.Function):
         batch_size, seq_len, hidden = x.shape
         num_components = means.shape[2]
         grad_x = torch.zeros_like(x)
+        grad_inv_var_covar = torch.zeros_like(inv_var_covar)
 
         grad_log_weights = torch.zeros_like(log_weights)
         grad_means = torch.zeros_like(means)
 
         grid = (batch_size, seq_len, hidden // 2)
-        gmm2d_backward[grid](x, means, inv_var_covar, log_weights, grad_output, grad_x, grad_means, grad_log_weights, seq_len, hidden, num_components)
+        gmm2d_backward[grid](x, means, inv_var_covar, log_weights, grad_output, grad_x, grad_means, grad_inv_var_covar, grad_log_weights, seq_len, hidden, num_components)
 
-        return grad_x, grad_means, None, grad_log_weights
+        return grad_x, grad_means, grad_inv_var_covar, grad_log_weights
 
 gmm2d_autograd = GMM2DTriton.apply
