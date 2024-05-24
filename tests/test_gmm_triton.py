@@ -91,6 +91,30 @@ def test_gradient_wrt_means_ref_impl(setup_gmm):
     torch.testing.assert_allclose(expected_grad, actual_grad, atol=1e-3, rtol=0)
 
 
+def test_gradient_wrt_inv_var_covar_ref_impl(setup_gmm):
+    gmm_activation, x, means, inv_var_covar, log_weights = setup_gmm
+    x.requires_grad = True
+    log_weights.requires_grad = True
+    means.requires_grad = True
+    inv_var_covar.requires_grad = True
+   
+    expected_output = x * gmm2d(x, means, inv_var_covar, log_weights)
+    dl_doutput = 1*torch.randn_like(expected_output, requires_grad=True) 
+    expected_output.backward(gradient=dl_doutput, inputs=inv_var_covar)
+    expected_grad = inv_var_covar.grad.clone()
+    log_weights.grad = None
+    means.grad = None
+    x.grad = None
+    inv_var_covar.grad = None
+
+    actual_output = gmm_activation(x)
+    torch.testing.assert_allclose(expected_output, actual_output, atol=1e-3, rtol=0)
+
+    actual_output.backward(gradient=dl_doutput, inputs=inv_var_covar)
+    actual_grad = inv_var_covar.grad.clone()
+    torch.testing.assert_allclose(expected_grad, actual_grad, atol=1e-3, rtol=0)
+
+
 def test_gradient_wrt_input_ref_impl(setup_gmm):
     gmm_activation, x, means, inv_var_covar, weights = setup_gmm
     x.requires_grad = True

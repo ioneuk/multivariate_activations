@@ -1,4 +1,5 @@
-from activations.gated_4d import Gated4d
+import activations
+from activations.gated_4d import Gated4d, Gated4dV2
 from activations.gated_mish import GatedMish
 from activations.mli2d import MLISoftInputLut2Layer
 
@@ -7,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed import ProcessGroup
 from activations.hyperbolic_paraboloid import HyperbolicParaboloidActivation
+from activations.raf import Raf2dSecondDegree
 
 try:
     from flash_attn.ops.activations import swiglu
@@ -120,7 +122,7 @@ class GatedMlp(nn.Module):
         )
         hidden_features = (hidden_features + multiple_of - 1) // multiple_of * multiple_of
         self.return_residual = return_residual
-        self.fc1 = nn.Linear(in_features, 2 * hidden_features + 2, bias=bias1, **factory_kwargs)
+        self.fc1 = nn.Linear(in_features, 2 * hidden_features, bias=bias1, **factory_kwargs)
         self.activation = activation
         self.fc2 = nn.Linear(hidden_features, out_features, bias=bias2, **factory_kwargs)
 
@@ -131,7 +133,7 @@ class GatedMlp(nn.Module):
         elif self.activation == F.silu and swiglu is not None:  # Special case for SwiGLU
             y, gate = y.chunk(2, dim=-1)
             y = swiglu(gate, y)
-        elif isinstance(self.activation, HyperbolicParaboloidActivation) or isinstance(self.activation, GatedMish) or isinstance(self.activation, Gated4d):
+        elif isinstance(self.activation, HyperbolicParaboloidActivation) or isinstance(self.activation, GatedMish) or isinstance(self.activation, Gated4d) or isinstance(self.activation, Gated4dV2) or isinstance(self.activation, Raf2dSecondDegree):
             y = self.activation(y)
         else:
             y, gate = y.chunk(2, dim=-1)

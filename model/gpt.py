@@ -23,10 +23,11 @@ from flash_attn.models.opt import remap_state_dict_hf_opt
 from flash_attn.modules.block import Block, ParallelBlock
 from flash_attn.modules.embedding import GPT2Embeddings, ParallelGPT2Embeddings
 from flash_attn.modules.mha import MHA, ParallelMHA
-from activations.gated_4d import Gated4d
+from activations.gated_4d import Gated4d, Gated4dV2
 from activations.gated_mish import GatedMish
 from activations.geglu import Geglu1dLearnable
 from activations.hyperbolic_paraboloid import HyperbolicParaboloidActivation
+from activations.raf import Raf2dSecondDegree
 from model.mlp import (
     FusedMLP,
     GatedMlp,
@@ -163,6 +164,7 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             "geglu",
             # Custom activations
             "gated-4d",
+            "gated-4dv2",
             "gated-mish",
             "hyperbolic-paraboloid",
             "geglu-learnable",
@@ -171,13 +173,16 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             "mli2d",
             "mli2d-gated",
             "mli2d-input",
-            "mli2d-gated-learned-coords"
+            "mli2d-gated-learned-coords",
+            "raf2d-2degree"
         ]
-        if config.activation_function in ["glu", "swiglu", "geglu", "gated-mish", "gated-4d", "geglu-learnable", "hyperbolic-paraboloid", "gmm2d-gated", "mli2d-gated", "mli2d-gated-learned-coords"]:
+        if config.activation_function in ["glu", "swiglu", "geglu", "gated-mish", "gated-4d", "gated-4dv2", "geglu-learnable", "hyperbolic-paraboloid", "gmm2d-gated", "mli2d-gated", "mli2d-gated-learned-coords", "raf2d-2degree"]:
             if config.activation_function == "mli2d-gated":
                 activation = GatedMLISoftLut2Layer(dim=int(config.hidden_size * 8 / 3), **factory_kwargs)
             elif config.activation_function == "gated-4d":
                 activation = Gated4d()
+            elif config.activation_function == "gated-4dv2":
+                activation = Gated4dV2()
             elif config.activation_function == "gmm2d-gated":
                 activation = GMMActivation2DFullyLearnable(dim=int(config.hidden_size * 8 / 3), **factory_kwargs)
             elif config.activation_function == "geglu-learnable":
@@ -188,6 +193,8 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
                 activation = GatedMish()
             elif config.activation_function == "mli2d-gated-learned-coords":
                 activation = GatedMLISoftLut2LayerWithLearnableCoords(dim=int(config.hidden_size * 8 / 3), **factory_kwargs)
+            elif config.activation_function == "raf2d-2degree":
+                activation = Raf2dSecondDegree(**factory_kwargs)
             else:
                 activation = (
                     F.sigmoid
@@ -477,6 +484,7 @@ class GPTModel(GPTPreTrainedModel):
 
             # Custom activations
             "gated-4d",
+            "gated-4dv2",
             "gated-mish",
             "hyperbolic-paraboloid",
             "geglu-learnable",
@@ -485,7 +493,8 @@ class GPTModel(GPTPreTrainedModel):
             "mli2d",
             "mli2d-gated",
             "mli2d-input",
-            "mli2d-gated-learned-coords"
+            "mli2d-gated-learned-coords",
+            "raf2d-2degree"
         ]
         pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
         vocab_size = (
