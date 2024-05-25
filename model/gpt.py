@@ -27,7 +27,7 @@ from activations.gated_4d import Gated4d, Gated4dV2
 from activations.gated_mish import GatedMish
 from activations.geglu import Geglu1dLearnable
 from activations.hyperbolic_paraboloid import HyperbolicParaboloidActivation
-from activations.raf import Raf2dSecondDegree
+from activations.raf import Raf2dSecondDegree, Raf2dThirdDegree, Raf2dFirstDegree
 from model.mlp import (
     FusedMLP,
     GatedMlp,
@@ -174,9 +174,11 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             "mli2d-gated",
             "mli2d-input",
             "mli2d-gated-learned-coords",
-            "raf2d-2degree"
+            "raf2d-1degree",
+            "raf2d-2degree",
+            "raf2d-3degree"
         ]
-        if config.activation_function in ["glu", "swiglu", "geglu", "gated-mish", "gated-4d", "gated-4dv2", "geglu-learnable", "hyperbolic-paraboloid", "gmm2d-gated", "mli2d-gated", "mli2d-gated-learned-coords", "raf2d-2degree"]:
+        if config.activation_function in ["glu", "swiglu", "geglu", "gated-mish", "gated-4d", "gated-4dv2", "geglu-learnable", "hyperbolic-paraboloid", "gmm2d-gated", "mli2d-gated", "mli2d-gated-learned-coords", "raf2d-1degree", "raf2d-2degree", "raf2d-3degree"]:
             if config.activation_function == "mli2d-gated":
                 activation = GatedMLISoftLut2Layer(dim=int(config.hidden_size * 8 / 3), **factory_kwargs)
             elif config.activation_function == "gated-4d":
@@ -193,8 +195,12 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
                 activation = GatedMish()
             elif config.activation_function == "mli2d-gated-learned-coords":
                 activation = GatedMLISoftLut2LayerWithLearnableCoords(dim=int(config.hidden_size * 8 / 3), **factory_kwargs)
+            elif config.activation_function == "raf2d-1degree":
+                activation = Raf2dFirstDegree(**factory_kwargs)
             elif config.activation_function == "raf2d-2degree":
                 activation = Raf2dSecondDegree(**factory_kwargs)
+            elif config.activation_function == "raf2d-3degree":
+                activation = Raf2dThirdDegree(**factory_kwargs)
             else:
                 activation = (
                     F.sigmoid
@@ -494,7 +500,9 @@ class GPTModel(GPTPreTrainedModel):
             "mli2d-gated",
             "mli2d-input",
             "mli2d-gated-learned-coords",
-            "raf2d-2degree"
+            "raf2d-1degree",
+            "raf2d-2degree",
+            "raf2d-3degree"
         ]
         pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
         vocab_size = (

@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed import ProcessGroup
 from activations.hyperbolic_paraboloid import HyperbolicParaboloidActivation
-from activations.raf import Raf2dSecondDegree
+from activations.raf import Raf2dSecondDegree, Raf2dThirdDegree, Raf2dFirstDegree
 
 try:
     from flash_attn.ops.activations import swiglu
@@ -133,7 +133,11 @@ class GatedMlp(nn.Module):
         elif self.activation == F.silu and swiglu is not None:  # Special case for SwiGLU
             y, gate = y.chunk(2, dim=-1)
             y = swiglu(gate, y)
-        elif isinstance(self.activation, HyperbolicParaboloidActivation) or isinstance(self.activation, GatedMish) or isinstance(self.activation, Gated4d) or isinstance(self.activation, Gated4dV2) or isinstance(self.activation, Raf2dSecondDegree):
+        elif isinstance(self.activation, HyperbolicParaboloidActivation) or isinstance(self.activation,
+                                                                                       GatedMish) or isinstance(
+                self.activation, Gated4d) or isinstance(self.activation, Gated4dV2) or isinstance(self.activation,
+                                                                                                  Raf2dSecondDegree) or isinstance(
+                self.activation, Raf2dThirdDegree) or isinstance(self.activation, Raf2dFirstDegree):
             y = self.activation(y)
         else:
             y, gate = y.chunk(2, dim=-1)
