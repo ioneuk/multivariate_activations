@@ -1,0 +1,7 @@
+# @package _global_
+model:
+  img_size: 224
+  num_classes: 1000
+  embed_dim: 1280
+  num_heads: 20
+  depth: 36

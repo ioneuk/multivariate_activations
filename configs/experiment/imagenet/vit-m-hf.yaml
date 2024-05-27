@@ -1,0 +1,11 @@
+# @package _global_
+defaults:
+  - /experiment/imagenet/vit-s-hf.yaml
+  - override /model/vit-model: vit-medium
+
+datamodule:
+  batch_size: 4
+
+train:
+  optimizer:
+    lr: 1.5e-4

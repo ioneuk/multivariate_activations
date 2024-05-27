@@ -1,0 +1,1 @@
+_target_: tasks.image_classification.VITLightningWrapper
