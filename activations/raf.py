@@ -61,7 +61,7 @@ class Raf2dSecondDegree(nn.Module):
         self.swish_mult = swish_mult
 
     def forward(self, x):
-        res = raf_function_3_deg(self.numerator_params, self.denominator_params, x)
+        res = raf_function_2_deg(self.numerator_params, self.denominator_params, x)
         if self.swish_mult:
             gate, _ = x.chunk(2, dim=-1)
             res = res * gate * torch.sigmoid(gate)
