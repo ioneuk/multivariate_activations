@@ -4,6 +4,7 @@ from functools import partial
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 from flash_attn.layers.patch_embed import PatchEmbed
 from flash_attn.modules.block import Block
@@ -73,6 +74,8 @@ def create_mlp_cls(embed_dim, mlp_ratio, act_layer, fused_mlp):
                 activation = Raf2dSecondDegree()
             elif act_layer == 'raf2d-3degree':
                 activation = Raf2dThirdDegree()
+            else:
+                activation = (F.sigmoid if act_layer == 'glu' else (F.silu if act_layer == 'swiglu' else F.gelu))
             mlp_cls = partial(
                 GatedMlp,
                 hidden_features=int(embed_dim * 8 / 3),
@@ -81,7 +84,7 @@ def create_mlp_cls(embed_dim, mlp_ratio, act_layer, fused_mlp):
         else:
             mlp_cls = partial(Mlp, hidden_features=inner_dim, activation=act_layer())
     else:
-        mlp_cls = partial(FusedMLP, hidden_features=inner_dim)
+        mlp_cls = partial(FusedMLP, hidden_features=inner_dim, activation=act_layer)
     return mlp_cls
 
 
