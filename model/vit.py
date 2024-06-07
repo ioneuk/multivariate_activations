@@ -1,16 +1,21 @@
 import re
 from collections import OrderedDict
 from functools import partial
+from typing import Optional
 
+import einops
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from fairseq.modules.moving_average_gated_attention import MovingAverageGatedAttention
+from fairseq.modules.gated_cross_attention import GatedCrossAttention
 from flash_attn.layers.patch_embed import PatchEmbed
 from flash_attn.modules.block import Block
 from flash_attn.modules.mha import MHA
 from flash_attn.modules.mlp import FusedMLP, Mlp
 from timm.models.helpers import named_apply
+from torch import Tensor
 from torch.nn.init import trunc_normal_
 from torchvision.ops import StochasticDepth
 
@@ -24,23 +29,63 @@ from activations.raf import Raf2dFirstDegree, Raf2dSecondDegree, Raf2dThirdDegre
 from model.mlp import GatedMlp
 
 try:
+    from flash_attn.ops.triton.layer_norm import layer_norm_fn, RMSNorm
+except ImportError:
+    layer_norm_fn, RMSNorm = None, None
+
+try:
     from flash_attn.ops.triton.layer_norm import layer_norm_fn
 except ImportError:
     layer_norm_fn = None
 
 
-def create_mixer_cls(
-    num_heads, qkv_bias, attn_drop, use_flash_attn, fused_bias_fc, cross_attn=False
-):
-    mixer_cls = partial(
-        MHA,
-        num_heads=num_heads,
-        cross_attn=cross_attn,
-        qkv_proj_bias=qkv_bias,
-        dropout=attn_drop,
-        fused_bias_fc=fused_bias_fc,
-        use_flash_attn=use_flash_attn,
-    )
+def create_mixer_cls(num_heads, qkv_bias, attn_drop, use_flash_attn, fused_bias_fc, use_mega=False, cross_attn=False, mega_z_dim=256, mega_hidden_dim=382, mega_n_dim=16, mega_hidden_dropout=0.1, mega_dropout=0.3, mega_truncation_length=1024, mega_rel_pos_bias='simple', mega_chunk_size=-1, mega_max_source_positions=1024, mega_act='silu'):
+    if use_mega:
+        if cross_attn:
+            mixer_cls = partial(GatedCrossAttention,
+            zdim=mega_z_dim,
+            ndim=mega_n_dim,
+            dropout=mega_dropout,
+            attention_dropout=attn_drop,
+            hidden_dropout=mega_hidden_dropout,
+            activation=mega_act,
+            attention_activation='softmax',
+            norm_type='layernorm',
+            prenorm=True,
+            feature_dropout=False,
+            rel_pos_bias='simple',
+            max_positions=mega_max_source_positions,
+        )
+        else:
+            mixer_cls = partial(MovingAverageGatedAttention,
+                zdim=mega_z_dim,
+                hdim=mega_hidden_dim,
+                ndim=mega_n_dim,
+                dropout=mega_dropout,
+                attention_dropout=attn_drop,
+                hidden_dropout=mega_hidden_dropout,
+                chunk_size=mega_chunk_size,
+                truncation=mega_truncation_length,
+                rel_pos_bias=mega_rel_pos_bias,
+                max_positions=mega_max_source_positions,
+                activation=mega_act,
+                attention_activation='softmax',
+                bidirectional=True,
+                norm_type='layernorm',
+                prenorm=True,
+                feature_dropout=False,
+            )
+    else:
+
+        mixer_cls = partial(
+            MHA,
+            num_heads=num_heads,
+            cross_attn=cross_attn,
+            qkv_proj_bias=qkv_bias,
+            dropout=attn_drop,
+            fused_bias_fc=fused_bias_fc,
+            use_flash_attn=use_flash_attn,
+        )
     return mixer_cls
 
 
@@ -87,6 +132,173 @@ def create_mlp_cls(embed_dim, mlp_ratio, act_layer, fused_mlp):
         mlp_cls = partial(FusedMLP, hidden_features=inner_dim, activation=act_layer)
     return mlp_cls
 
+class MegaBlock(Block):
+
+    def __init__(self, dim, mixer_cls=None, mlp_cls=None, norm_cls=nn.LayerNorm, dropout_cls=nn.Dropout, prenorm=True,
+                 resid_dropout1=0.0, resid_dropout2=0.0, drop_path1=0.0, drop_path2=0.0, fused_dropout_add_ln=False,
+                 return_residual=False, residual_in_fp32=False, sequence_parallel=False, mark_shared_params=False, use_mega=False):
+        super().__init__(dim, mixer_cls, mlp_cls, norm_cls, dropout_cls, prenorm, resid_dropout1, resid_dropout2,
+                         drop_path1, drop_path2, fused_dropout_add_ln, return_residual, residual_in_fp32,
+                         sequence_parallel, mark_shared_params)
+
+    def forward(
+        self,
+        hidden_states: Tensor,
+        residual: Optional[Tensor] = None,
+        mixer_subset=None,
+        mixer_kwargs=None,
+    ):
+        r"""Pass the input through the encoder layer.
+
+        Args:
+            hidden_states: the sequence to the encoder layer (required).
+            residual: if postnorm, residual=None, If prenorm, hidden_states = Attn/MLP(LN(residual))
+            mixer_subset: for cross-attention only. If not None, will take a subset of x
+                before applying the query projection. Useful for e.g., ViT where we only care
+                about the CLS token in the last layer.
+        """
+        # TODO: input to mixer is of shape: seq x batch x embed
+        if self.prenorm:
+            if not self.fused_dropout_add_ln:
+                dropped = self.drop_path1(self.dropout1(hidden_states))
+                residual = (dropped + residual) if residual is not None else dropped
+                hidden_states = self.norm1(residual.to(dtype=self.norm1.weight.dtype))
+                if self.residual_in_fp32:
+                    residual = residual.to(torch.float32)
+            else:
+                if self.drop_path1.p == 0 or not self.training:
+                    rowscale1 = None
+                else:
+                    rowscale1 = self.drop_path1(
+                        torch.ones(
+                            hidden_states.shape[:-1],
+                            device=hidden_states.device,
+                            dtype=hidden_states.dtype,
+                        )
+                    )
+                hidden_states, residual = layer_norm_fn(
+                    hidden_states,
+                    self.norm1.weight,
+                    self.norm1.bias,
+                    residual=residual,
+                    eps=self.norm1.eps,
+                    dropout_p=self.dropout1.p if self.training else 0.0,
+                    rowscale=rowscale1,
+                    prenorm=True,
+                    residual_in_fp32=self.residual_in_fp32,
+                    is_rms_norm=isinstance(self.norm1, RMSNorm)
+                )
+
+            hidden_states = einops.rearrange(hidden_states, 'b s hid -> s b hid')
+            if mixer_subset is not None:
+                # cross attention
+                hidden_states = self.mixer(hidden_states[mixer_subset, :, :], hidden_states, hidden_states)
+            else:
+                hidden_states = self.mixer(hidden_states)
+            if isinstance(hidden_states, tuple):
+                # For cases when mixer returns tuples (like MEGA) of output and residual we just need the first argument
+                hidden_states = hidden_states[0]
+                hidden_states = einops.rearrange(hidden_states, 's b hid -> b s hid')
+            if mixer_subset is not None:
+                residual = residual[:, mixer_subset]
+            if not isinstance(self.mlp, nn.Identity):
+                if not self.fused_dropout_add_ln:
+                    dropped = self.drop_path2(self.dropout2(hidden_states))
+                    residual = (dropped + residual) if residual is not None else dropped
+                    hidden_states = self.norm2(residual.to(dtype=self.norm2.weight.dtype))
+                    if self.residual_in_fp32:
+                        residual = residual.to(torch.float32)
+                else:
+                    if self.drop_path2.p == 0 or not self.training:
+                        rowscale2 = None
+                    else:
+                        rowscale2 = self.drop_path2(
+                            torch.ones(
+                                hidden_states.shape[:-1],
+                                device=hidden_states.device,
+                                dtype=hidden_states.dtype,
+                            )
+                        )
+                    hidden_states, residual = layer_norm_fn(
+                        hidden_states,
+                        self.norm2.weight,
+                        self.norm2.bias,
+                        residual=residual,
+                        eps=self.norm2.eps,
+                        dropout_p=self.dropout2.p if self.training else 0.0,
+                        rowscale=rowscale2,
+                        prenorm=True,
+                        residual_in_fp32=self.residual_in_fp32,
+                        is_rms_norm=isinstance(self.norm2, RMSNorm)
+                    )
+                hidden_states = self.mlp(hidden_states)
+            return hidden_states, residual
+        else:
+            assert residual is None
+            hidden_states = einops.rearrange(hidden_states, 'b s hid -> s b hid')
+            mixer_out = self.mixer(
+                hidden_states, **(mixer_kwargs if mixer_kwargs is not None else {})
+            )
+            if self.return_residual:  # mixer out is actually a pair here
+                mixer_out, hidden_states = mixer_out
+            if not self.fused_dropout_add_ln:
+                hidden_states = self.norm1(
+                    (self.drop_path1(self.dropout1(mixer_out)) + hidden_states).to(
+                        dtype=self.norm1.weight.dtype
+                    )
+                )
+            else:
+                if self.drop_path1.p == 0 or not self.training:
+                    rowscale1 = None
+                else:
+                    rowscale1 = self.drop_path1(
+                        torch.ones(
+                            mixer_out.shape[:-1], device=mixer_out.device, dtype=mixer_out.dtype
+                        )
+                    )
+                hidden_states = layer_norm_fn(
+                    mixer_out,
+                    self.norm1.weight,
+                    self.norm1.bias,
+                    residual=hidden_states,
+                    eps=self.norm1.eps,
+                    dropout_p=self.dropout1.p if self.training else 0.0,
+                    rowscale=rowscale1,
+                    prenorm=False,
+                    is_rms_norm=isinstance(self.norm1, RMSNorm)
+                )
+            if not isinstance(self.mlp, nn.Identity):
+                mlp_out = self.mlp(hidden_states)
+                if self.return_residual:  # mlp out is actually a pair here
+                    mlp_out, hidden_states = mlp_out
+                if not self.fused_dropout_add_ln:
+                    hidden_states = self.norm2(
+                        (self.drop_path2(self.dropout2(mlp_out)) + hidden_states).to(
+                            dtype=self.norm2.weight.dtype
+                        )
+                    )
+                else:
+                    if self.drop_path2.p == 0 or not self.training:
+                        rowscale2 = None
+                    else:
+                        rowscale2 = self.drop_path2(
+                            torch.ones(
+                                mlp_out.shape[:-1], device=mlp_out.device, dtype=mlp_out.dtype
+                            )
+                        )
+                    hidden_states = layer_norm_fn(
+                        mlp_out,
+                        self.norm2.weight,
+                        self.norm2.bias,
+                        residual=hidden_states,
+                        eps=self.norm2.eps,
+                        dropout_p=self.dropout2.p if self.training else 0.0,
+                        rowscale=rowscale2,
+                        prenorm=False,
+                        is_rms_norm=isinstance(self.norm2, RMSNorm)
+                    )
+            return hidden_states
+
 
 def create_block(
     embed_dim,
@@ -106,6 +318,7 @@ def create_block(
     layer_idx=None,
     n_layer=None,
     last_layer_subset=False,
+    use_mega=False
 ):
     mixer_cls = create_mixer_cls(
         num_heads,
@@ -113,11 +326,14 @@ def create_block(
         attn_drop_rate,
         use_flash_attn,
         fused_bias_fc,
+        use_mega=use_mega,
         cross_attn=(last_layer_subset and layer_idx == n_layer - 1),
     )
     mlp_cls = create_mlp_cls(embed_dim, mlp_ratio, act_layer, fused_mlp)
     # TD [2022-10-15]: Force residual in fp32 in case of DeepSpeed
-    block = Block(
+    bloc_cls = MegaBlock if use_mega else Block
+
+    block = bloc_cls(
         embed_dim,
         mixer_cls,
         mlp_cls,
@@ -167,6 +383,7 @@ class VisionTransformer(nn.Module):
         fused_bias_fc=False,
         fused_mlp=False,
         fused_dropout_add_ln=False,
+        use_mega=False
     ):
         """
         Args:
@@ -258,6 +475,7 @@ class VisionTransformer(nn.Module):
                     layer_idx=i,
                     n_layer=depth,
                     last_layer_subset=(global_pool == "token"),
+                    use_mega=use_mega
                 )
                 for i in range(depth)
             ]
