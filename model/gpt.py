@@ -169,6 +169,7 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             "hyperbolic-paraboloid",
             "geglu-learnable",
             "gmm2d",
+            "gmm2d-fully-learnable",
             "gmm2d-gated",
             "mli2d",
             "mli2d-gated",
@@ -232,6 +233,8 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             elif config.activation_function == "sqrelu":
                 activation = sqrelu_fwd
             elif config.activation_function == "gmm2d":
+                activation = GMMActivation2D(dim=config.n_inner if config.n_inner else config.hidden_size * 4, **factory_kwargs)
+            elif config.activation_function == "gmm2d-fully-learnable":
                 activation = GMMActivation2DFullyLearnable(dim=config.n_inner if config.n_inner else config.hidden_size * 4, **factory_kwargs)
             elif config.activation_function == "mli2d":
                 activation = MLISoftLut2Layer(dim=config.n_inner if config.n_inner else config.hidden_size * 4, **factory_kwargs)
@@ -495,6 +498,7 @@ class GPTModel(GPTPreTrainedModel):
             "hyperbolic-paraboloid",
             "geglu-learnable",
             "gmm2d",
+            "gmm2d-fully-learnable",
             "gmm2d-gated",
             "mli2d",
             "mli2d-gated",
