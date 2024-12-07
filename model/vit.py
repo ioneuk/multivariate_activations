@@ -598,7 +598,8 @@ class VisionTransformer(nn.Module):
         n_layer = len(self.blocks)
         # Convert from Wqkv to Wq and Wkv for cross attention (last layer)
         if (
-            self.blocks[-1].mixer.cross_attn
+            hasattr(self.blocks[-1].mixer, 'cross_attn')
+            and self.blocks[-1].mixer.cross_attn
             and f"blocks.{n_layer - 1}.mixer.Wqkv.weight" in state_dict
         ):
             Wqkv = state_dict.pop(f"blocks.{n_layer - 1}.mixer.Wqkv.weight")

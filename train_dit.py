@@ -192,64 +192,64 @@ def main(args: argparse.Namespace):
     model, opt, loader = accelerator.prepare(model, opt, loader)
 
     # Variables for monitoring/logging purposes:
-    # train_steps = 0
-    # global_steps = 0
-    # log_steps = 0
-    # running_loss = 0
-    # start_time = time()
-    #
-    # logger.info(f'Training for {args.epochs} epochs...')
-    # for epoch in range(args.epochs):
-    #
-    #     # sampler.set_epoch(epoch)
-    #
-    #     logger.info(f'Beginning epoch {epoch}...')
-    #     for idx, (x, y) in enumerate(loader):
-    #         x = x.to(device)
-    #         y = y.to(device)
-    #         with torch.no_grad():
-    #             x = vae.encode(x).latent_dist.sample().mul_(0.18215)
-    #         t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
-    #         model_kwargs = dict(y=y)
-    #         loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
-    #         loss = loss_dict['loss'].mean()
-    #         if (idx + 1) % grad_accumulation_steps == 0:
-    #             opt.zero_grad()
-    #             accelerator.backward(loss)
-    #             opt.step()
-    #             update_ema(ema, model)
-    #             global_steps += 1
-    #
-    #         # Log loss values:
-    #         running_loss += loss.item()
-    #         log_steps += 1
-    #         train_steps += 1
-    #         if (train_steps / grad_accumulation_steps) % args.log_every == 0 and global_steps > 0:
-    #             # Measure training speed:
-    #             torch.cuda.synchronize()
-    #             end_time = time()
-    #             steps_per_sec = log_steps / (end_time - start_time)
-    #             # Reduce loss history over all processes:
-    #             avg_loss = torch.tensor(running_loss / log_steps, device=device)
-    #             avg_loss = avg_loss.item() / accelerator.num_processes
-    #             if accelerator.is_main_process:
-    #                 logger.info(
-    #                     f'(step={global_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}')
-    #                 wandb.log({'loss': avg_loss}, step=global_steps)
-    #             # Reset monitoring variables:
-    #             running_loss = 0
-    #             log_steps = 0
-    #             start_time = time()
-    #
-    #         if (train_steps / grad_accumulation_steps) % args.ckpt_every == 0 and global_steps > 0:
-    #             if accelerator.is_main_process:
-    #                 checkpoint_path = f'{checkpoint_dir}/{train_steps:07d}.pt'
-    #                 save_checkpoint(args, checkpoint_dir, ema, model.module, opt, train_steps)
-    #                 logger.info(f"Saved checkpoint to {checkpoint_path}")
-    #
-    # if accelerator.is_main_process:
-    #     final_checkpoint_path = save_checkpoint(args, checkpoint_dir, ema, model.module, opt, train_steps)
-    #     logger.info(f'Saved final checkpoint to {final_checkpoint_path}')
+    train_steps = 0
+    global_steps = 0
+    log_steps = 0
+    running_loss = 0
+    start_time = time()
+
+    logger.info(f'Training for {args.epochs} epochs...')
+    for epoch in range(args.epochs):
+
+        # sampler.set_epoch(epoch)
+
+        logger.info(f'Beginning epoch {epoch}...')
+        for idx, (x, y) in enumerate(loader):
+            x = x.to(device)
+            y = y.to(device)
+            with torch.no_grad():
+                x = vae.encode(x).latent_dist.sample().mul_(0.18215)
+            t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
+            model_kwargs = dict(y=y)
+            loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
+            loss = loss_dict['loss'].mean()
+            if (idx + 1) % grad_accumulation_steps == 0:
+                opt.zero_grad()
+                accelerator.backward(loss)
+                opt.step()
+                update_ema(ema, model)
+                global_steps += 1
+
+            # Log loss values:
+            running_loss += loss.item()
+            log_steps += 1
+            train_steps += 1
+            if (train_steps / grad_accumulation_steps) % args.log_every == 0 and global_steps > 0:
+                # Measure training speed:
+                torch.cuda.synchronize()
+                end_time = time()
+                steps_per_sec = log_steps / (end_time - start_time)
+                # Reduce loss history over all processes:
+                avg_loss = torch.tensor(running_loss / log_steps, device=device)
+                avg_loss = avg_loss.item() / accelerator.num_processes
+                if accelerator.is_main_process:
+                    logger.info(
+                        f'(step={global_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}')
+                    wandb.log({'loss': avg_loss}, step=global_steps)
+                # Reset monitoring variables:
+                running_loss = 0
+                log_steps = 0
+                start_time = time()
+
+            if (train_steps / grad_accumulation_steps) % args.ckpt_every == 0 and global_steps > 0:
+                if accelerator.is_main_process:
+                    checkpoint_path = f'{checkpoint_dir}/{train_steps:07d}.pt'
+                    save_checkpoint(args, checkpoint_dir, ema, model.module, opt, train_steps)
+                    logger.info(f"Saved checkpoint to {checkpoint_path}")
+
+    if accelerator.is_main_process:
+        final_checkpoint_path = save_checkpoint(args, checkpoint_dir, ema, model.module, opt, train_steps)
+        logger.info(f'Saved final checkpoint to {final_checkpoint_path}')
     model.eval()  # important! This disables randomized embedding dropout
 
     # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...

@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-@torch.jit.script
+@torch.compile
 def raf_function_1_deg(num_p, den_p, x):
     x1, x2 = x.chunk(2, dim=-1)
     num = num_p[0, 0] + num_p[0, 1] * x2 + num_p[1, 0] * x1 + num_p[1, 1] * x1 * x2

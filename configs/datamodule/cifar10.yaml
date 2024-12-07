@@ -2,8 +2,7 @@ _target_: src.datamodules.language_modeling_hf.LMDataModule
 dataset_name: openwebtext
 dataset_config_name: null
 tokenizer_name: gpt2
-#Path to the openwebtext dataset
-cache_dir: /openwebtext/cache
+cache_dir: /home/user/datasets/cifar10
 max_length: 1024
 val_ratio: 0.0005
 val_split_seed: 2357
